@@ -2,7 +2,13 @@
 #include <Wire.h>
 #include <DFRobot_RGBLCD1602.h>
 #include <SparkFun_LIS2DH12.h>
+#include <SoftwareSerial.h>
 #include <SerialRFID.h>
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h>
+
+// Fortæl TinyGSM, at vi bruger et u-blox modem (LEXI deler AT-kommandoer med SARA-serien)
+#define TINY_GSM_MODEM_UBLOX
+#include <TinyGsmClient.h>
 
 // Dine specifikke pins på ESP32-S3
 #define SDA_PIN 13
@@ -17,7 +23,6 @@
 
 #define LTERX 35
 #define LTETX 36
-#define LTERST 10
 #define LTEPWR 11
 
 #define LRWRX 37
@@ -25,94 +30,136 @@
 #define LRWRES 12
 
 #define BUZZER_PIN 6 
-
 #define VBATT 4
 #define PSTAT 5
 
-// Initialisering
-// 0x2D er RGB-adressen for V2.0 af dette display
+// --- 1. Initialisering af I2C Hardware ---
 DFRobot_RGBLCD1602 lcd(0x2D, 16, 2); 
-
 SPARKFUN_LIS2DH12 accel;
 
-// Opsætning af RFID med Hardware Serial (Serial1)
-SerialRFID rfid(Serial1); 
+// --- 2. Opsætning af Serielle Porte ---
+// RFID på SoftwareSerial (9600 baud)
+SoftwareSerial rfidSerial(RFIDRX, RFIDTX);
+SerialRFID rfid(rfidSerial); 
 
-// Variabel til at gemme det læste RFID tag
+// GPS på Hardware Serial2
+SFE_UBLOX_GNSS myGNSS;
+
+// LTE Modem på Hardware Serial1
+TinyGsm modem(Serial1);
+
+// Variabel til RFID tag
 char tag[SIZE_TAG_ID];
 
+// Funktion til at tænde u-blox LEXI-R10 modem
+void powerOnModem() {
+    Serial.println("Tænder LEXI-R10 Modem...");
+    pinMode(LTEPWR, OUTPUT);
+    digitalWrite(LTEPWR, HIGH);
+    delay(100);
+    digitalWrite(LTEPWR, LOW);
+    delay(1500); // Hold LOW for at tænde
+    digitalWrite(LTEPWR, HIGH);
+    
+    // Giv modemet 3 sekunder til at boote
+    delay(3000); 
+}
+
 void setup() {
+    // Debug Monitor (UART0)
     Serial.begin(115200);
-    
-    // Start Hardware Serial1 til RFID (Baudrate, Konfiguration, RX pin, TX pin)
-    Serial1.begin(9600, SERIAL_8N1, RFIDRX, RFIDTX);
-    
     delay(2000);
     Serial.println(">> System Starter...");
 
-    // 1. Start I2C bussen
-    Wire.begin(SDA_PIN, SCL_PIN);
+    // Start Serielle forbindelser
+    Serial1.begin(115200, SERIAL_8N1, LTERX, LTETX); // LTE Modem
+    Serial2.begin(9600, SERIAL_8N1, GPSRX, GPSTX);   // GPS
+    rfidSerial.begin(9600);                          // RFID
 
-    // 2. Start LCD
+    // Start I2C bussen og LCD
+    Wire.begin(SDA_PIN, SCL_PIN);
     lcd.init();
     lcd.setRGB(100, 50, 255); 
     lcd.setCursor(0, 0);
     lcd.print("System Starter...");
     lcd.setBacklight(true);
 
-    // 3. Start SparkFun Accelerometer
+    // Start Accelerometer
     if (accel.begin(0x18, Wire) == false) {
         Serial.println("LIS2DH12 ikke fundet!");
-        lcd.setCursor(0, 1);
-        lcd.print("Sensor Fejl!");
     } else {
         Serial.println("LIS2DH12 online!");
+    }
+
+    // Start GPS
+    if (myGNSS.begin(Serial2) == false) {
+        Serial.println("u-blox GNSS ikke fundet på Serial2!");
+    } else {
+        Serial.println("u-blox GNSS online!");
+        myGNSS.setUART1Output(COM_TYPE_UBX); 
+    }
+
+    // Tænd og start LTE Modem
+    powerOnModem();
+    Serial.println("Initialiserer AT kommandoer til modem...");
+    if (!modem.restart()) {
+        Serial.println("Kunne ikke få kontakt til LEXI-R10!");
         lcd.setCursor(0, 1);
-        lcd.print("Sensor OK!");
+        lcd.print("Modem Fejl!  ");
+    } else {
+        String modemInfo = modem.getModemInfo();
+        Serial.print("LEXI-R10 online! Info: ");
+        Serial.println(modemInfo);
+        lcd.setCursor(0, 1);
+        lcd.print("Modem OK!    ");
     }
     
-    delay(1500);
+    delay(2000);
     lcd.clear();
 }
 
 void loop() {
-    // --- 1. Læs og Vis RFID ---
+    // --- 1. Læs RFID (via SoftwareSerial) ---
     if (rfid.readTag(tag, sizeof(tag))) {
-        // Skriv til Serial Monitor
-        Serial.print("RFID Tag: ");
+        Serial.print("RFID Tag scannet: ");
         Serial.println(tag);
 
-        // Skriv til LCD
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Scannet Tag:");
         lcd.setCursor(0, 1);
         lcd.print(tag);
 
-        // Vent 2 sekunder så man kan nå at læse det på skærmen
-        delay(2000);
-        
-        // Ryd skærmen inden accelerometeret tager over igen
+        delay(2000); // Vis på skærmen i 2 sekunder
         lcd.clear();
     }
 
-    // --- 2. Læs Accelerometer ---
+    // --- 2. Læs GPS (via Serial2) ---
+    if (myGNSS.getPVT()) {
+        float latitude = myGNSS.getLatitude() / 10000000.0;
+        float longitude = myGNSS.getLongitude() / 10000000.0;
+        
+        Serial.print("GPS -> Lat: ");
+        Serial.print(latitude, 6);
+        Serial.print(" | Lon: ");
+        Serial.println(longitude, 6);
+    }
+
+    // --- 3. Læs Accelerometer (via I2C) ---
     if (accel.available()) {
         float x = accel.getX();
         float y = accel.getY();
         float z = accel.getZ();
 
-        // Skriv til LCD - Linje 1
         lcd.setCursor(0, 0);
         lcd.print("X:"); lcd.print((int)x);
         lcd.print(" Y:"); lcd.print((int)y);
-        lcd.print("    "); // Slet overskydende tegn
+        lcd.print("    "); 
 
-        // Skriv til LCD - Linje 2
         lcd.setCursor(0, 1);
         lcd.print("Z:"); lcd.print((int)z);
         lcd.print(" mg        ");
     }
 
-    delay(200); // Opdateringshastighed
+    delay(200); // Kør loop med 5 Hz
 }
