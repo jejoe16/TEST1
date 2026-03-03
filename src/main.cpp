@@ -5,10 +5,9 @@
 #include <SoftwareSerial.h>
 #include <SerialRFID.h>
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
+#include "LTEModem.h"
 
 // Fortæl TinyGSM, at vi bruger et u-blox modem (LEXI deler AT-kommandoer med SARA-serien)
-#define TINY_GSM_MODEM_UBLOX
-#include <TinyGsmClient.h>
 
 // Dine specifikke pins på ESP32-S3
 #define SDA_PIN 13
@@ -21,9 +20,9 @@
 #define GPSTX 8
 #define GPS1PPS 9
 
-#define LTERX 35
-#define LTETX 36
-#define LTEPWR 11
+#define LTERX 1
+#define LTETX 2
+#define LTEPWR 3
 
 #define LRWRX 37
 #define LRWTX 38
@@ -32,6 +31,8 @@
 #define BUZZER_PIN 6 
 #define VBATT 4
 #define PSTAT 5
+
+LTEModem modem(Serial1, &Serial);
 
 // --- 1. Initialisering af I2C Hardware ---
 DFRobot_RGBLCD1602 lcd(0x2D, 16, 2); 
@@ -45,24 +46,23 @@ SerialRFID rfid(rfidSerial);
 // GPS på Hardware Serial2
 SFE_UBLOX_GNSS myGNSS;
 
-// LTE Modem på Hardware Serial1
-TinyGsm modem(Serial1);
 
 // Variabel til RFID tag
 char tag[SIZE_TAG_ID];
 
 // Funktion til at tænde u-blox LEXI-R10 modem
 void powerOnModem() {
-    Serial.println("Tænder LEXI-R10 Modem...");
+    Serial.println(">> Forsøger at tænde LEXI-R10 Modem...");
     pinMode(LTEPWR, OUTPUT);
-    digitalWrite(LTEPWR, HIGH);
-    delay(100);
-    digitalWrite(LTEPWR, LOW);
-    delay(1500); // Hold LOW for at tænde
-    digitalWrite(LTEPWR, HIGH);
     
-    // Giv modemet 3 sekunder til at boote
-    delay(3000); 
+    // Baseret på din kode: Puls sekvens
+    digitalWrite(LTEPWR, HIGH);
+    delay(1000);
+    digitalWrite(LTEPWR, LOW);
+    
+    delay(1000); 
+    Serial.println(">> Modem power cycle færdig. Klar til AT kommandoer.");
+    Serial.println(">> Skriv 'AT' i Serial Monitor for at teste forbindelse.");
 }
 
 void setup() {
@@ -101,17 +101,12 @@ void setup() {
 
     // Tænd og start LTE Modem
     powerOnModem();
-    Serial.println("Initialiserer AT kommandoer til modem...");
-    if (!modem.restart()) {
-        Serial.println("Kunne ikke få kontakt til LEXI-R10!");
-        lcd.setCursor(0, 1);
-        lcd.print("Modem Fejl!  ");
-    } else {
-        String modemInfo = modem.getModemInfo();
-        Serial.print("LEXI-R10 online! Info: ");
-        Serial.println(modemInfo);
-        lcd.setCursor(0, 1);
-        lcd.print("Modem OK!    ");
+    
+    
+        // Full init: handshake → SIM → MNO → APN → register → attach → PDP
+    if (!modem.init("your.apn.here", 100)) {  // 100 = Standard Europe
+        Serial.println("Modem init failed!");
+        return;
     }
     
     delay(2000);
@@ -119,7 +114,9 @@ void setup() {
 }
 
 void loop() {
+
     // --- 1. Læs RFID (via SoftwareSerial) ---
+    
     if (rfid.readTag(tag, sizeof(tag))) {
         Serial.print("RFID Tag scannet: ");
         Serial.println(tag);
@@ -162,4 +159,5 @@ void loop() {
     }
 
     delay(200); // Kør loop med 5 Hz
+    
 }
